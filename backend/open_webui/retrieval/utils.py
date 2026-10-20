@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import re
+import sys
 import time
 from typing import Awaitable, Optional, Union
 from urllib.parse import quote
@@ -47,6 +48,7 @@ from open_webui.models.notes import Notes
 from open_webui.models.config import Config
 from open_webui.models.users import UserModel
 from open_webui.retrieval.loaders.youtube import YoutubeLoader
+from open_webui.retrieval.collection_cache import CacheEntry, estimate_object_bytes, get_collection_cache
 from open_webui.retrieval.vector.async_client import ASYNC_VECTOR_DB_CLIENT
 from open_webui.retrieval.external import retrieve_external_knowledge
 from open_webui.retrieval.vector.factory import get_vector_db_client
@@ -72,7 +74,10 @@ class BM25Retriever(BaseRetriever):
     k: int
 
     def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> list[Document]:
-        return self.vectorizer.get_top_n(query.split(), self.docs, n=self.k)
+        top = self.vectorizer.get_top_n(query.split(), self.docs, n=self.k)
+        # Copy: `docs` may be shared (cached) across requests and downstream
+        # compressors mutate document metadata (e.g. 'score').
+        return [Document(page_content=doc.page_content, metadata=dict(doc.metadata)) for doc in top]
 
 
 def is_youtube_url(url: str) -> bool:
@@ -480,6 +485,32 @@ async def query_doc_with_native_hybrid_search(
         return None
 
 
+def _build_bm25_index(collection_result: GetResult, enable_enriched_texts: bool):
+    """Build the BM25 documents + index for a collection.
+
+    Returns ``((docs, vectorizer), estimated_bytes)``. CPU-bound: call from a worker thread.
+    """
+    from rank_bm25 import BM25Okapi
+
+    original_texts = collection_result.documents[0]
+    bm25_metadatas = [
+        {**meta, CHUNK_HASH_KEY: _content_hash(original_texts[idx])}
+        for idx, meta in enumerate(collection_result.metadatas[0])
+    ]
+    bm25_texts = get_enriched_texts(collection_result) if enable_enriched_texts else original_texts
+
+    docs = [Document(page_content=text, metadata=meta) for text, meta in zip(bm25_texts, bm25_metadatas)]
+    vectorizer = BM25Okapi([text.split() for text in bm25_texts])
+
+    # Rough estimate of what was added on top of the raw collection data.
+    estimated = sum(estimate_object_bytes(meta) + 600 for meta in bm25_metadatas)
+    estimated += sum(sys.getsizeof(freqs) + 60 * len(freqs) for freqs in vectorizer.doc_freqs)
+    estimated += sys.getsizeof(vectorizer.idf) + 60 * len(vectorizer.idf)
+    if enable_enriched_texts:
+        estimated += sum(sys.getsizeof(text) for text in bm25_texts)
+    return (docs, vectorizer), estimated
+
+
 async def query_doc_with_hybrid_search(
     collection_name: str,
     collection_result: Optional[GetResult],
@@ -492,6 +523,7 @@ async def query_doc_with_hybrid_search(
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
     native_hybrid_search: bool = True,
+    cache_entry: Optional[CacheEntry] = None,
 ) -> dict:
     if native_hybrid_search and not enable_enriched_texts:
         native_result = await query_doc_with_native_hybrid_search(
@@ -526,21 +558,18 @@ async def query_doc_with_hybrid_search(
 
     log.debug('query_doc_with_hybrid_search:doc %s', collection_name)
 
-    original_texts = collection_result.documents[0]
-    bm25_metadatas = [
-        {**meta, CHUNK_HASH_KEY: _content_hash(original_texts[idx])}
-        for idx, meta in enumerate(collection_result.metadatas[0])
-    ]
+    if cache_entry is not None:
+        # Reuse (or build once, off the event loop) the BM25 index for this collection.
+        bm25_docs, vectorizer = await cache_entry.derive(
+            f'bm25:{"enriched" if enable_enriched_texts else "plain"}',
+            lambda: _build_bm25_index(collection_result, enable_enriched_texts),
+        )
+    else:
+        (bm25_docs, vectorizer), _ = await asyncio.to_thread(
+            _build_bm25_index, collection_result, enable_enriched_texts
+        )
 
-    bm25_texts = get_enriched_texts(collection_result) if enable_enriched_texts else original_texts
-
-    from rank_bm25 import BM25Okapi
-
-    bm25_retriever = BM25Retriever(
-        docs=[Document(page_content=text, metadata=meta) for text, meta in zip(bm25_texts, bm25_metadatas)],
-        vectorizer=BM25Okapi([text.split() for text in bm25_texts]),
-        k=k,
-    )
+    bm25_retriever = BM25Retriever(docs=bm25_docs, vectorizer=vectorizer, k=k)
 
     vector_search_retriever = VectorSearchRetriever(
         collection_name=collection_name,
@@ -686,6 +715,39 @@ def get_all_items_from_collections(collection_names: list[str]) -> dict:
     return merge_get_results(results)
 
 
+async def get_all_items_from_collections_cached(collection_names: list[str], chat_id: Optional[str] = None) -> dict:
+    """Async, cache-aware variant of `get_all_items_from_collections` (full-context mode)."""
+    cache = get_collection_cache()
+    results = []
+
+    for collection_name in collection_names:
+        if not collection_name:
+            continue
+        try:
+            entry = await cache.get(
+                collection_name,
+                chat_id,
+                lambda name=collection_name: ASYNC_VECTOR_DB_CLIENT.get(collection_name=name),
+            )
+        except Exception as e:
+            log.exception(f'Error when querying the collection: {e}')
+            continue
+        if entry is None:
+            continue
+        result = entry.result
+        results.append(
+            {
+                'ids': [list(result.ids[0])],
+                'documents': [list(result.documents[0])],
+                # Shallow-copy metadata: callers rewrite fields (e.g. source names) in place
+                # and the cached dicts are shared between requests.
+                'metadatas': [[dict(m) if isinstance(m, dict) else m for m in result.metadatas[0]]],
+            }
+        )
+
+    return merge_get_results(results)
+
+
 async def query_collection(
     request,
     collection_names: list[str],
@@ -693,6 +755,7 @@ async def query_collection(
     embedding_function,
     k: int,
     user: UserModel | None = None,
+    chat_id: Optional[str] = None,
 ) -> dict:
     config = await Config.get_many(
         'rag.enable_hybrid_search',
@@ -719,6 +782,7 @@ async def query_collection(
                 r=config.get('rag.relevance_threshold'),
                 hybrid_bm25_weight=config.get('rag.hybrid_bm25_weight'),
                 enable_enriched_texts=config.get('rag.enable_hybrid_search_enriched_texts'),
+                chat_id=chat_id,
             )
         except Exception as e:
             log.debug('Hybrid search failed, falling back to vector search: %s', e)
@@ -788,6 +852,7 @@ async def query_collection_with_hybrid_search(
     r: float,
     hybrid_bm25_weight: float,
     enable_enriched_texts: bool = False,
+    chat_id: Optional[str] = None,
 ) -> dict:
     results = []
     last_error = None
@@ -824,9 +889,14 @@ async def query_collection_with_hybrid_search(
         len(collection_names),
     )
 
+    cache = get_collection_cache()
+
     async def _fetch_collection(name: str):
         try:
-            return name, await ASYNC_VECTOR_DB_CLIENT.get(collection_name=name)
+            # Served from the per-conversation collection cache when enabled
+            # (and a chat_id is known); otherwise a plain one-shot load.
+            entry = await cache.get(name, chat_id, lambda: ASYNC_VECTOR_DB_CLIENT.get(collection_name=name))
+            return name, entry
         except Exception as e:
             log.exception(f'Failed to fetch collection {name}: {e}')
             failed_collection_names.add(name)
@@ -840,7 +910,8 @@ async def query_collection_with_hybrid_search(
         try:
             result = await query_doc_with_hybrid_search(
                 collection_name=collection_name,
-                collection_result=collection_results[collection_name],
+                collection_result=collection_results[collection_name].result,
+                cache_entry=collection_results[collection_name],
                 query=query,
                 embedding_function=embedding_function,
                 k=k,
@@ -1374,6 +1445,7 @@ async def get_sources_from_items(
     hybrid_search,
     full_context=False,
     user: UserModel | None = None,
+    chat_id: Optional[str] = None,
 ):
     log.debug('items: %s %s %s %s %s', items, queries, embedding_function, reranking_function, full_context)
 
@@ -1674,9 +1746,7 @@ async def get_sources_from_items(
 
             try:
                 if full_context:
-                    # Sync helper makes blocking VECTOR_DB_CLIENT calls;
-                    # offload so the async caller's event loop stays free.
-                    query_result = await asyncio.to_thread(get_all_items_from_collections, collection_names)
+                    query_result = await get_all_items_from_collections_cached(list(collection_names), chat_id)
                 else:
                     query_result = await query_collection(
                         request,
@@ -1685,6 +1755,7 @@ async def get_sources_from_items(
                         embedding_function=embedding_function,
                         k=k,
                         user=user,
+                        chat_id=chat_id,
                     )
             except Exception as e:
                 log.exception(e)

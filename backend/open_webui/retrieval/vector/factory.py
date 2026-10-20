@@ -7,6 +7,7 @@ from open_webui.config import (
     VECTOR_DB,
 )
 from open_webui.env import USE_SLIM
+from open_webui.retrieval.vector.instrumentation import instrument_client
 from open_webui.retrieval.vector.main import VectorDBBase
 from open_webui.retrieval.vector.type import VectorType
 
@@ -97,7 +98,7 @@ class Vector:
                 raise ValueError(f'Unsupported vector type: {vector_type}')
 
 
-VECTOR_DB_CLIENT = None if USE_SLIM else Vector.get_vector(VECTOR_DB)
+VECTOR_DB_CLIENT = None if USE_SLIM else instrument_client(Vector.get_vector(VECTOR_DB))
 _vector_client_lock = Lock()
 
 
@@ -113,7 +114,7 @@ def get_vector_db_client() -> VectorDBBase:
             if VECTOR_DB == VectorType.PGVECTOR and not config.PGVECTOR_DB_URL.startswith('postgres'):
                 raise HTTPException(503, 'Configure PGVECTOR_DB_URL for remote vector storage.')
             try:
-                VECTOR_DB_CLIENT = Vector.get_vector(VECTOR_DB)
+                VECTOR_DB_CLIENT = instrument_client(Vector.get_vector(VECTOR_DB))
             except HTTPException:
                 raise
             except Exception as exc:

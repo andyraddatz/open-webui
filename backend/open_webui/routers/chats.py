@@ -1700,6 +1700,9 @@ async def delete_chat_by_id(
         result = await Chats.delete_chat_by_id_and_user_id(id, user.id, db=db)
 
     if result:
+        from open_webui.retrieval.collection_cache import get_collection_cache
+
+        get_collection_cache().release_chat(id)
         await publish_event(
             request,
             EVENTS.CHAT_DELETED,

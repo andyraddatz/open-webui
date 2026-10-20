@@ -2520,6 +2520,7 @@ async def query_chat_files(
     __request__: Request = None,
     __user__: dict = None,
     __files__: list[dict] = None,
+    __chat_id__: str = None,
 ) -> str:
     """
     Search files attached to the current chat using semantic/vector search.
@@ -2606,6 +2607,7 @@ async def query_chat_files(
             hybrid_search=rag_config.get('rag.enable_hybrid_search'),
             full_context=full_context,
             user=user_model,
+            chat_id=__chat_id__,
         )
 
         chunks = []
@@ -3162,6 +3164,7 @@ async def query_knowledge_files(
     __request__: Request = None,
     __user__: dict = None,
     __model_knowledge__: list[dict] = None,
+    __chat_id__: str = None,
 ) -> str:
     """
     Search knowledge base files using semantic/vector search. Searches across collections (KBs),
@@ -3324,6 +3327,7 @@ async def query_knowledge_files(
                 embedding_function=lambda queries, prefix: embedding_function(queries, prefix=prefix, user=user_model),
                 k=count,
                 user=user_model,
+                chat_id=__chat_id__,
             )
 
             if query_results and 'documents' in query_results:

@@ -1787,6 +1787,7 @@ async def chat_completion_files_handler(
                 hybrid_search=rag_config.get('rag.enable_hybrid_search'),
                 full_context=all_full_context or rag_config.get('rag.full_context'),
                 user=user,
+                chat_id=body.get('metadata', {}).get('chat_id'),
             )
         except Exception as e:
             log.exception(e)
