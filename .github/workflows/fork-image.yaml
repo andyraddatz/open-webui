@@ -42,6 +42,11 @@ jobs:
               print "ENV NODE_OPTIONS=\"--max-old-space-size=12288\""
               next
             }
+            /^ENV HOME=\/root/ {
+              print
+              print "ENV DATA_DIR=/workspace/open-webui/data OLLAMA_MODELS=/workspace/ollama/models"
+              next
+            }
             { print }
           ' Dockerfile > "${RUNNER_TEMP}/Dockerfile"
 
