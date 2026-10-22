@@ -99,7 +99,7 @@
 <Modal size="lg" bind:show>
 	<div>
 		<div class=" flex justify-between dark:text-gray-300 px-4.5 pt-3 pb-2">
-			<div class=" text-sm font-medium self-center flex items-center">
+			<div class=" text-sm font-medium self-center flex flex-col">
 				{#if citation?.source?.name}
 					{@const document = mergedDocuments?.[0]}
 					{#if document?.metadata?.file_id || isValidHttpUrl(document.source?.url)}
@@ -128,6 +128,11 @@
 					{/if}
 				{:else}
 					{$i18n.t('Citation')}
+				{/if}
+				{#if mergedDocuments?.[0]?.metadata?.directory_path}
+					<div class="text-xs font-normal text-gray-500 dark:text-gray-400 line-clamp-1">
+						{$i18n.t('Folder')}: {decodeString(mergedDocuments[0].metadata.directory_path)}
+					</div>
 				{/if}
 			</div>
 			<button
