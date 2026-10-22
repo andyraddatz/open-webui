@@ -1806,31 +1806,16 @@ async def get_sources_from_items(
 
     # Attach the knowledge-base directory path (e.g. "docs/specs") to each file's metadata
     try:
-        dir_paths_by_kb = {}
         for source in sources:
             item = source.get('source') or {}
             kb_id = item.get('id') if item.get('type') == 'collection' else None
-            if not kb_id:
-                continue
-            if kb_id not in dir_paths_by_kb:
-                directories = {d.id: d for d in await Knowledges.get_all_directories(kb_id)}
-
-                def _path(dir_id):
-                    names, seen = [], set()
-                    while dir_id in directories and dir_id not in seen:
-                        seen.add(dir_id)
-                        names.append(directories[dir_id].name)
-                        dir_id = directories[dir_id].parent_id
-                    return '/'.join(reversed(names))
-
-                dir_paths_by_kb[kb_id] = {
-                    file.id: _path(dir_id) if dir_id else ''
-                    for file, dir_id in await Knowledges.get_files_with_directory_ids(kb_id)
-                }
-            file_dirs = dir_paths_by_kb[kb_id]
-            for metadata in source['metadata']:
-                if isinstance(metadata, dict) and file_dirs.get(metadata.get('file_id')):
-                    metadata['directory_path'] = file_dirs[metadata['file_id']]
+            metas = [m for m in source['metadata'] if isinstance(m, dict) and m.get('file_id')]
+            paths = await Knowledges.get_directory_paths_by_file_ids(
+                list({m['file_id'] for m in metas}), preferred_knowledge_id=kb_id
+            )
+            for metadata in metas:
+                if paths.get(metadata['file_id']):
+                    metadata['directory_path'] = paths[metadata['file_id']]
     except Exception as e:
         log.exception(e)
     return sources

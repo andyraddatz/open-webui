@@ -922,6 +922,47 @@ class KnowledgeTable:
         except Exception:
             return []
 
+    async def get_directory_paths_by_file_ids(
+        self,
+        file_ids: list[str],
+        preferred_knowledge_id: Optional[str] = None,
+        db: Optional[AsyncSession] = None,
+    ) -> dict[str, str]:
+        """Map file_id -> directory path (e.g. 'docs/specs') for files that sit in a KB directory."""
+        if not file_ids:
+            return {}
+        try:
+            async with get_async_db_context(db) as db:
+                result = await db.execute(
+                    select(KnowledgeFile.file_id, KnowledgeFile.knowledge_id, KnowledgeFile.directory_id).filter(
+                        KnowledgeFile.file_id.in_(file_ids), KnowledgeFile.directory_id.isnot(None)
+                    )
+                )
+                rows = result.all()
+                if not rows:
+                    return {}
+
+                kb_ids = {kb_id for _, kb_id, _ in rows}
+                dirs = await db.execute(select(KnowledgeDirectory).filter(KnowledgeDirectory.knowledge_id.in_(kb_ids)))
+                directories = {d.id: d for d in dirs.scalars().all()}
+
+                def path_of(dir_id):
+                    names, seen = [], set()
+                    while dir_id in directories and dir_id not in seen:
+                        seen.add(dir_id)
+                        names.append(directories[dir_id].name)
+                        dir_id = directories[dir_id].parent_id
+                    return '/'.join(reversed(names))
+
+                paths: dict[str, str] = {}
+                for file_id, kb_id, dir_id in rows:
+                    path = path_of(dir_id)
+                    if path and (file_id not in paths or kb_id == preferred_knowledge_id):
+                        paths[file_id] = path
+                return paths
+        except Exception:
+            return {}
+
     async def get_directory_by_id(
         self, directory_id: str, db: Optional[AsyncSession] = None
     ) -> Optional[KnowledgeDirectoryModel]:
