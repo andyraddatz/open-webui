@@ -1,6 +1,6 @@
 name: Fork image (rag-collection-cache)
 
-# Fork-only workflow: builds the ollama variant (USE_OLLAMA=true, equivalent to :ollama) linux/amd64 image from the
+# Fork-only workflow: builds the standard (main variant) linux/amd64 image from the
 # feature branch and pushes it to this repository's GHCR namespace.
 
 on:
@@ -60,11 +60,10 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ env.FULL_IMAGE_NAME }}:rag-cache-ollama
-            ${{ env.FULL_IMAGE_NAME }}:rag-cache-ollama-git-${{ env.SHORT_SHA }}
-          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache-ollama
-          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache-ollama,mode=max
+            ${{ env.FULL_IMAGE_NAME }}:rag-cache
+            ${{ env.FULL_IMAGE_NAME }}:rag-cache-git-${{ env.SHORT_SHA }}
+          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache
+          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache,mode=max
           build-args: |
             BUILD_HASH=${{ github.sha }}
             BUILD_CHANNEL=main
-            USE_OLLAMA=true
