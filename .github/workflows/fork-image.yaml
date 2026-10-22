@@ -62,8 +62,8 @@ jobs:
           tags: |
             ${{ env.FULL_IMAGE_NAME }}:rag-cache
             ${{ env.FULL_IMAGE_NAME }}:rag-cache-git-${{ env.SHORT_SHA }}
-          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache
-          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-rag-cache,mode=max
+          cache-from: type=gha,scope=rag-cache
+          cache-to: type=gha,scope=rag-cache,mode=max
           build-args: |
             BUILD_HASH=${{ github.sha }}
             BUILD_CHANNEL=main
