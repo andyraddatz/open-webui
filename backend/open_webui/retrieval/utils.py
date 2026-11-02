@@ -908,10 +908,11 @@ async def query_collection_with_hybrid_search(
 
     async def process_query(collection_name, query):
         try:
+            entry = collection_results[collection_name]
             result = await query_doc_with_hybrid_search(
                 collection_name=collection_name,
-                collection_result=collection_results[collection_name].result,
-                cache_entry=collection_results[collection_name],
+                collection_result=entry.result if entry else None,
+                cache_entry=entry,
                 query=query,
                 embedding_function=embedding_function,
                 k=k,
